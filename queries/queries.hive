@@ -1,0 +1,81 @@
+-- Load needed ESRI JARs.
+add jar esri-geometry-api.jar spatial-sdk-hadoop.jar HiveUDFs.jar;
+
+-- Define some functions.
+create temporary function ST_GeodesicLengthWGS84 as 'com.esri.hadoop.hive.ST_GeodesicLengthWGS84';
+create temporary function ST_Intersects as 'com.esri.hadoop.hive.ST_Intersects';
+create temporary function ST_Length as 'com.esri.hadoop.hive.ST_Length';
+create temporary function ST_LineString as 'com.esri.hadoop.hive.ST_LineString';
+create temporary function ST_Polygon as 'com.esri.hadoop.hive.ST_Polygon';
+create temporary function ST_SetSRID as 'com.esri.hadoop.hive.ST_SetSRID';
+
+-- First, download the Uber dataset from infochimps and load it into a table called uber.
+
+-- Calculate trip durations. Since the anonymized dataset wraps the week we factor out a few
+-- trips that start on Sunday night and end on Monday morning from the previous week.
+SELECT
+    id,
+    unix_timestamp(dt) - unix_timestamp(fv)
+FROM (
+    SELECT
+        id, dt, fv
+    FROM (
+        SELECT
+            id, dt,
+            FIRST_VALUE(dt) OVER (PARTITION BY id ORDER BY dt) as fv,
+            ROW_NUMBER() OVER (PARTITION BY id ORDER BY dt DESC) as lastrk
+        FROM
+            uber
+        ) sub1
+    WHERE
+        lastrk = 1
+    ) sub2
+WHERE
+    (unix_timestamp(dt) - unix_timestamp(fv)) < 28800;
+
+-- Trip distances.
+-- WGS84 is the coordinate system used by GPS.
+SELECT
+    id,
+    ST_GeodesicLengthWGS84(
+        ST_SetSRID(
+            ST_LineString(
+                collect_array(latitude),
+                collect_array(longitude)), 4326))
+    as distance
+FROM
+    uber
+GROUP BY
+    id;
+
+-- Create a locations table to hold interesting shapes.
+-- We'll put in a polygon that represents the SFO dropoff area.
+-- The file locations.asv is available in the data directory.
+CREATE TABLE locations (name string, definition string);
+LOAD DATA LOCAL INPATH 'locations.asv' INTO TABLE locations;
+
+-- See which trips intersect with SFO.
+-- This line works around a mapjoin bug in Hive 11.
+set hive.auto.convert.join=false;
+SELECT
+    id
+FROM
+    (
+    SELECT
+        id, 
+        ST_LineString(collect_array(latitude), collect_array(longitude)) AS trip
+    FROM
+        uber
+    GROUP BY
+        id
+    ) trips JOIN
+    (
+    SELECT
+        ST_Polygon(definition) as sfo_coordinates
+    FROM
+        locations
+    WHERE
+        locations.name = "SFO"
+    ) sfosub
+WHERE
+    ST_Intersects(sfosub.sfo_coordinates, trips.trip);
