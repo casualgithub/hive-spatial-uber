@@ -46,7 +46,7 @@ SELECT
 FROM (
     SELECT
         id,
-        ST_Point(latitude, longitude) as point
+        ST_Point(longitude, latitude) as point
     FROM
         uber
     ) sub
@@ -71,7 +71,7 @@ FROM (
     FROM (
         SELECT
             id, 
-            ST_Point(latitude, longitude) AS point
+            ST_Point(longitude, latitude) AS point
         FROM
             uber
         ) points
